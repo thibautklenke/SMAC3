@@ -359,6 +359,7 @@ class SuccessiveHalving(AbstractIntensifier):
 
                 if len(configs) < n_configs:
                     try:
+                        self._config_selector._current_budget = self._budgets_in_stage[bracket][stage] # NEW
                         config = next(self.config_generator)
                         configs.append(config)
                     except StopIteration:
@@ -399,6 +400,7 @@ class SuccessiveHalving(AbstractIntensifier):
                         )
 
                         for trial in trials:
+                            # print(f"intensifier : {get_config_hash(config)} : {trial.budget}") # NEW
                             yield trial
                             update = True
 
@@ -444,6 +446,7 @@ class SuccessiveHalving(AbstractIntensifier):
             next_bracket = self._get_next_bracket()
             for _ in range(self._n_configs_in_stage[next_bracket][0]):
                 try:
+                    self.config_selector._current_budget = self._budgets_in_stage[next_bracket][0] # NEW
                     config = next(self.config_generator)
                     configs.append(config)
                 except StopIteration:
