@@ -185,7 +185,7 @@ class ConfigSelector:
 
                 config = self._scenario.configspace.sample_configuration(1)
                 self._call_callbacks_on_end(config)
-                print(f"{get_config_hash(config)} : {self._current_budget}")
+                # print(f"{get_config_hash(config)} : {self._current_budget}")
                 yield config
                 self._call_callbacks_on_start()
 
