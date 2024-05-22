@@ -22,6 +22,8 @@ from smac.runhistory.runhistory import RunHistory
 from smac.scenario import Scenario
 from smac.utils.logging import get_logger
 
+from smac.utils.configspace import get_config_hash
+
 __copyright__ = "Copyright 2022, automl.org"
 __license__ = "3-clause BSD"
 
@@ -101,6 +103,10 @@ class ConfigSelector:
         self._random_design = random_design
         self._callbacks = callbacks
 
+        # NEW
+        self._current_budget = None
+        self._budget_per_config = {}
+
         self._initial_design_configs = initial_design.select_configurations()
         if len(self._initial_design_configs) == 0:
             raise RuntimeError("SMAC needs initial configurations to work.")
@@ -179,6 +185,7 @@ class ConfigSelector:
 
                 config = self._scenario.configspace.sample_configuration(1)
                 self._call_callbacks_on_end(config)
+                print(f"{get_config_hash(config)} : {self._current_budget}")
                 yield config
                 self._call_callbacks_on_start()
 
@@ -211,19 +218,24 @@ class ConfigSelector:
             self._previous_entries = Y.shape[0]
 
             # Now we maximize the acquisition function
+            self._call_before_maximizing(self._current_budget) # NEW
+
             challengers = self._acquisition_maximizer.maximize(
                 previous_configs,
                 n_points=self._retrain_after,
                 random_design=self._random_design,
             )
-
+            # print("CHALLENGERS")
+                
             counter = 0
             failed_counter = 0
             for config in challengers:
+                self._budget_per_config[get_config_hash(config)] = self._current_budget
                 if config not in self._processed_configs:
                     counter += 1
                     self._processed_configs.append(config)
                     self._call_callbacks_on_end(config)
+                    # print(f"selector : {get_config_hash(config)} : {self._budget_per_config[get_config_hash(config)]}") # NEW
                     yield config
                     retrain = counter == self._retrain_after
                     self._call_callbacks_on_start()
@@ -233,6 +245,7 @@ class ConfigSelector:
                         logger.debug(
                             f"Yielded {counter} configurations. Start new iteration and retrain surrogate model."
                         )
+                        # print("DONE YIELDING1")
                         break
                 else:
                     failed_counter += 1
@@ -240,7 +253,14 @@ class ConfigSelector:
                     # We exit the loop if we have tried to add the same configuration too often
                     if failed_counter == self._retries:
                         logger.warning(f"Could not return a new configuration after {self._retries} retries." "")
+                        # print("DONE YIELDING2")
                         return
+            # print("DONE YIELDING3")
+
+    # NEW
+    def _call_before_maximizing(self, budget) -> None:
+        for callback in self._callbacks:
+            callback.before_maximizing(budget, self)
 
     def _call_callbacks_on_start(self) -> None:
         for callback in self._callbacks:
