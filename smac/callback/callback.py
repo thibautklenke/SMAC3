@@ -37,6 +37,10 @@ class Callback:
         """
         pass
 
+    # NEW
+    def before_maximizing(self, budget: float, config_selector: smac.main.config_selector.ConfigSelector) -> None:
+        pass
+
     def on_next_configurations_end(
         self, config_selector: smac.main.config_selector.ConfigSelector, config: Configuration
     ) -> None:
