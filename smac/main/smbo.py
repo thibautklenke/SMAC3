@@ -289,6 +289,8 @@ class SMBO:
         for callback in self._callbacks:
             callback.on_start(self)
 
+        self._intensifier._config_selector._acquisition_function._config_selector = self._intensifier._config_selector # give config selector to af
+
         dask_data_to_scatter = {}
         if isinstance(self._runner, DaskParallelRunner) and data_to_scatter is not None:
             dask_data_to_scatter = dict(data_to_scatter=self._runner._client.scatter(data_to_scatter, broadcast=True))

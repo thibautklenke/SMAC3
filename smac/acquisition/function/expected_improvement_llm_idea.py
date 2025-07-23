@@ -83,10 +83,6 @@ class EI(AbstractAcquisitionFunction):
         self._prompt_history = []
         self._result_history = []
 
-        self._config_selector = None
-
-        self._last_size = -1
-
     @property
     def name(self) -> str:  # noqa: D102
         return "Expected Improvement"
@@ -151,72 +147,74 @@ class EI(AbstractAcquisitionFunction):
         m, v = self._model.predict_marginalized(X)
         s = np.sqrt(v)
 
-        if len(self._config_selector._runhistory) > self._last_size:
+        primer = f"""
+        You are a mathematical acquisition function in a Bayesian optimization loop.
+        As such, you only return values and do not produce language or python code.
 
-            self._last_size = len(self._config_selector._runhistory)
+        Your task is to compute a single acquisition value for each candidate configuration. These values guide the optimizer in selecting the next configuration to evaluate.
 
-            X_run, y_run, _ = self._config_selector._collect_data()
+        The goal is to balance **exploration** (choosing uncertain regions) and **exploitation** (favoring regions with high predicted performance). The optimizer selects the configuration with the **maximum** acquisition value.
 
-            primer = f"""
-            You are deployed in a Bayesian optimization loop in a Hyperparameter configuration setting (minimization).
-            Specifically, you are within the used Expected Improvement Acquisition function.
-            Remember, EI uses a parameter xi to trade-off exploration and exploitation.
-            Your job is it to dynamically adjust this xi parameter during the optimization to enhance the 
-            exploration and exploitation trade-off.
+        ### Input:
+        - A list of configurations: [[x11, x12, x13], [x21, x22, x23], ...]
+        - Corresponding model predictions from a random forest surrogate:
+        - `MEANS`: predicted objective values
+        - `VARIANCES`: estimated uncertainties
 
-            You will be given the history of evaluated configurations and their performances, where CONFIGURATIONS[i]
-            corresponds to PERFORMANCES[i]. Take these into account to balance off exploration and exloitation.
+        Each configuration has a corresponding mean and variance by index (i.e., MEANS[i] and VARIANCES[i] belong to CONFIGURATIONS[i]).
 
-            ONLY return the numerical value for xi and no other information - neither explanation nor python code.
-            """
+        ### Output:
+        Return a list of acquisition values: [[v1], [v2], ...], where vi corresponds to CONFIGURATIONS[i].
 
-            prompt = f"""
-            EVALUATED_CONFIGURATIONS={X_run},
-            SEEN_PERFORMANCES={y_run}
-            """
+        **Important:** Remember, Return ONLY the list of comma-separated numerical values — no extra text, explanations or python code.
+        """
 
-            self._prompt_history.append(prompt)
 
-            content = [('system', primer)]
+        prompt = f"""
+        CONFIGURATIONS={X},
+        MEANS={m},
+        VARIANCES={v}
+        """
 
-            max_context = 200
+        self._prompt_history.append(prompt)
 
-            prompt_context = self._prompt_history[-max_context:]
-            result_context = self._result_history[-max_context:]
+        content = [('system', primer)]
 
-            for i in range(len(prompt_context)):
-                if i < len(prompt_context):
-                    content.append(('user', prompt_context[i]))
-                if i < len(result_context):
-                    content.append(('system', result_context[i]))
+        for i in range(len(self._prompt_history)):
+            if i < len(self._prompt_history):
+                content.append(('user', self._prompt_history[i]))
+            if i < len(self._result_history):
+                content.append(('system', self._result_history[i]))
 
-            result = send_to_llm(content)
+        result1 = send_to_llm(content)
 
-            self._result_history.append(result)
+        #print(result1)
 
-            self._xi = ast.literal_eval(result)
-            print(self._eta, y_run)
+        self._result_history.append(result1)
 
-        def calculate_f() -> np.ndarray:
-            z = (self._eta - m - self._xi) / s
-            return (self._eta - m - self._xi) * norm.cdf(z) + s * norm.pdf(z)
+        prompt2 = f"""
+        Fine, and now again ONLY return the final result of acquisition values in the format
+        [[v1], [v2], ...]
+        """
 
-        if np.any(s == 0.0):
-            # if std is zero, we have observed x on all instances
-            # using a RF, std should be never exactly 0.0
-            # Avoid zero division by setting all zeros in s to one.
-            # Consider the corresponding results in f to be zero.
-            logger.warning("Predicted std is 0.0 for at least one sample.")
-            s_copy = np.copy(s)
-            s[s_copy == 0.0] = 1.0
-            f = calculate_f()
-            f[s_copy == 0.0] = 0.0
-        else:
-            f = calculate_f()
+        self._prompt_history.append(prompt2)
 
-        if (f < 0).any():
-            raise ValueError("Expected Improvement is smaller than 0 for at least one " "sample.")
-        
+        content = [('system', primer)]
+
+        for i in range(len(self._prompt_history)):
+            if i < len(self._prompt_history):
+                content.append(('user', self._prompt_history[i]))
+            if i < len(self._result_history):
+                content.append(('system', self._result_history[i]))
+
+        result2 = send_to_llm(content)
+
+        print(result2)
+
+        self._result_history.append(result2)
+
+        f = np.array(ast.literal_eval(result2))
+
         return f
 
 
