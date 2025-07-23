@@ -82,10 +82,12 @@ class EI(AbstractAcquisitionFunction):
 
         self._prompt_history = []
         self._result_history = []
+        self._xi_history = []
 
         self._config_selector = None
 
         self._last_size = -1
+
 
     @property
     def name(self) -> str:  # noqa: D102
@@ -151,6 +153,7 @@ class EI(AbstractAcquisitionFunction):
         m, v = self._model.predict_marginalized(X)
         s = np.sqrt(v)
 
+        # update \xi only if run history was updated
         if len(self._config_selector._runhistory) > self._last_size:
 
             self._last_size = len(self._config_selector._runhistory)
@@ -158,21 +161,34 @@ class EI(AbstractAcquisitionFunction):
             X_run, y_run, _ = self._config_selector._collect_data()
 
             primer = f"""
-            You are deployed in a Bayesian optimization loop in a Hyperparameter configuration setting (minimization).
-            Specifically, you are within the used Expected Improvement Acquisition function.
-            Remember, EI uses a parameter xi to trade-off exploration and exploitation.
-            Your job is it to dynamically adjust this xi parameter during the optimization to enhance the 
-            exploration and exploitation trade-off.
+            You are a decision-making agent inside a Bayesian Optimization loop for hyperparameter tuning, where the objective is to minimize loss.
 
-            You will be given the history of evaluated configurations and their performances, where CONFIGURATIONS[i]
-            corresponds to PERFORMANCES[i]. Take these into account to balance off exploration and exloitation.
+            You are currently invoked by the Expected Improvement (EI) acquisition function. EI uses a parameter `xi` to control the trade-off between exploration and exploitation:
+            - Higher `xi` encourages exploration.
+            - Lower `xi` favors exploitation of known good regions.
 
-            ONLY return the numerical value for xi and no other information - neither explanation nor python code.
+            Your task is to dynamically choose a scalar value for `xi` based on the current state of the optimization.
+
+            You will be given:
+            - `EVALUATED_CONFIGURATIONS`: a list of vectors representing past input configurations.
+            - `SEEN_PERFORMANCES`: a list of scalar values representing the observed performance (loss) for each configuration. Lower values are better.
+            - `ETA`: the current incumbent's function value.
+            - `XI_history`: a list of all past `xi` values chosen by you
+
+            Use this history to assess whether the optimization process is stuck, converging, or still uncertain — and adjust `xi` accordingly.
+
+            Keep in mind that we have a very limited budget of only 89 evaluations.
+
+            Return a **single scalar float** value for `xi`. Do **not** return any explanation, code, or metadata — just the number.
+
+            The output must satisfy: `xi >= 0`. Additionally, `xi` should be roughly compatible with `eta` in its order of magnitude.
             """
 
             prompt = f"""
             EVALUATED_CONFIGURATIONS={X_run},
-            SEEN_PERFORMANCES={y_run}
+            SEEN_PERFORMANCES={y_run},
+            ETA={self._eta},
+            XI_HISTORY={self._xi_history}
             """
 
             self._prompt_history.append(prompt)
@@ -194,8 +210,11 @@ class EI(AbstractAcquisitionFunction):
 
             self._result_history.append(result)
 
-            self._xi = ast.literal_eval(result)
-            print(self._eta, y_run)
+            self._xi = ast.literal_eval(result) * 200
+
+            self._xi_history.append(self._xi)
+
+            print(result)
 
         def calculate_f() -> np.ndarray:
             z = (self._eta - m - self._xi) / s
