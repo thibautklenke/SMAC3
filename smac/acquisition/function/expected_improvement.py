@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import re
 from scipy.stats import norm
 
 from smac.acquisition.function.abstract_acquisition_function import (
@@ -161,27 +162,26 @@ class EI(AbstractAcquisitionFunction):
             X_run, y_run, _ = self._config_selector._collect_data()
 
             primer = f"""
-            You are a decision-making agent inside a Bayesian Optimization loop for hyperparameter tuning, where the objective is to minimize loss.
+            You are a decision-making agent in a Bayesian Optimization loop for hyperparameter tuning. The objective is to minimize a scalar loss.
 
-            You are currently invoked by the Expected Improvement (EI) acquisition function. EI uses a parameter `xi` to control the trade-off between exploration and exploitation:
-            - Higher `xi` encourages exploration.
-            - Lower `xi` favors exploitation of known good regions.
+            You are invoked by the Expected Improvement (EI) acquisition function. EI uses a parameter `xi` to trade off between:
+            - Exploration (higher `xi`)
+            - Exploitation (lower `xi`)
 
-            Your task is to dynamically choose a scalar value for `xi` based on the current state of the optimization.
+            Your task: Choose a scalar value for `xi` based on the current optimization state.
 
-            You will be given:
-            - `EVALUATED_CONFIGURATIONS`: a list of vectors representing past input configurations.
-            - `SEEN_PERFORMANCES`: a list of scalar values representing the observed performance (loss) for each configuration. Lower values are better.
-            - `ETA`: the current incumbent's function value.
-            - `XI_history`: a list of all past `xi` values chosen by you
+            You are given:
+            - `EVALUATED_CONFIGURATIONS`: a list of past input vectors
+            - `SEEN_PERFORMANCES`: the observed losses for each configuration (lower is better)
+            - `ETA`: the best observed performance so far
+            - `XI_history`: all previous `xi` values chosen by you
 
-            Use this history to assess whether the optimization process is stuck, converging, or still uncertain — and adjust `xi` accordingly.
+            Use this context to assess optimization progress and select the next `xi`.
 
-            Keep in mind that we have a very limited budget of only 89 evaluations.
-
-            Return a **single scalar float** value for `xi`. Do **not** return any explanation, code, or metadata — just the number.
-
-            The output must satisfy: `xi >= 0`. Additionally, `xi` should be roughly compatible with `eta` in its order of magnitude.
+            **Output Format Rules — read carefully:**
+            - Output must be **a single float** (e.g. `0.01`)
+            - Output must satisfy: `xi >= 0`
+            - Output **must not include** any explanation, text, code, or formatting — just the raw number
             """
 
             prompt = f"""
@@ -195,7 +195,7 @@ class EI(AbstractAcquisitionFunction):
 
             content = [('system', primer)]
 
-            max_context = 200
+            max_context = 1
 
             prompt_context = self._prompt_history[-max_context:]
             result_context = self._result_history[-max_context:]
@@ -206,15 +206,21 @@ class EI(AbstractAcquisitionFunction):
                 if i < len(result_context):
                     content.append(('system', result_context[i]))
 
+            # print(f"###{content}###\n\n")
+
             result = send_to_llm(content)
-
-            self._result_history.append(result)
-
-            self._xi = ast.literal_eval(result) * 200
-
-            self._xi_history.append(self._xi)
-
-            print(result)
+            # print(f"###{result}###\n\n")
+    
+            # use regex to find a number in the LLM's response (integer, float or float in scientific notation)
+            match_in_result = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", result)
+            
+            if match_in_result:
+                self._xi = float(match_in_result.group()) # * 200
+                self._result_history.append(self._xi)
+                self._xi_history.append(self._xi)
+                print(self._xi)
+            else:
+                raise ValueError(f"Unable to parse LLM response as float: {result}")
 
         def calculate_f() -> np.ndarray:
             z = (self._eta - m - self._xi) / s
