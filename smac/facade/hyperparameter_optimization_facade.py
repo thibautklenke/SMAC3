@@ -3,6 +3,7 @@ from __future__ import annotations
 from ConfigSpace import Configuration
 
 from smac.acquisition.function.expected_improvement import EI
+from smac.acquisition.function.weighted_expected_improvement import WEI
 from smac.acquisition.maximizer.local_and_random_search import (
     LocalAndSortedRandomSearch,
 )
@@ -76,7 +77,8 @@ class HyperparameterOptimizationFacade(AbstractFacade):
             Controls the balance between exploration and exploitation of the
             acquisition function.
         """
-        return EI(xi=xi, log=True)
+        #return EI(xi=xi, log=True)
+        return WEI()
 
     @staticmethod
     def get_acquisition_maximizer(  # type: ignore
