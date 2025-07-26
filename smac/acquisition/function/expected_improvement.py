@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import re
 from scipy.stats import norm
 
 from smac.acquisition.function.abstract_acquisition_function import (
@@ -82,10 +83,12 @@ class EI(AbstractAcquisitionFunction):
 
         self._prompt_history = []
         self._result_history = []
+        self._xi_history = []
 
         self._config_selector = None
 
         self._last_size = -1
+
 
     @property
     def name(self) -> str:  # noqa: D102
@@ -151,6 +154,7 @@ class EI(AbstractAcquisitionFunction):
         m, v = self._model.predict_marginalized(X)
         s = np.sqrt(v)
 
+        # update \xi only if run history was updated
         if len(self._config_selector._runhistory) > self._last_size:
 
             self._last_size = len(self._config_selector._runhistory)
@@ -158,28 +162,40 @@ class EI(AbstractAcquisitionFunction):
             X_run, y_run, _ = self._config_selector._collect_data()
 
             primer = f"""
-            You are deployed in a Bayesian optimization loop in a Hyperparameter configuration setting (minimization).
-            Specifically, you are within the used Expected Improvement Acquisition function.
-            Remember, EI uses a parameter xi to trade-off exploration and exploitation.
-            Your job is it to dynamically adjust this xi parameter during the optimization to enhance the 
-            exploration and exploitation trade-off.
+            You are a decision-making agent in a Bayesian Optimization loop for hyperparameter tuning. The objective is to minimize a scalar loss.
 
-            You will be given the history of evaluated configurations and their performances, where CONFIGURATIONS[i]
-            corresponds to PERFORMANCES[i]. Take these into account to balance off exploration and exloitation.
+            You are invoked by the Expected Improvement (EI) acquisition function. EI uses a parameter `xi` to trade off between:
+            - Exploration (higher `xi`)
+            - Exploitation (lower `xi`)
 
-            ONLY return the numerical value for xi and no other information - neither explanation nor python code.
+            Your task: Choose a scalar value for `xi` based on the current optimization state.
+
+            You are given:
+            - `EVALUATED_CONFIGURATIONS`: a list of past input vectors
+            - `SEEN_PERFORMANCES`: the observed losses for each configuration (lower is better)
+            - `ETA`: the best observed performance so far
+            - `XI_history`: all previous `xi` values chosen by you
+
+            Use this context to assess optimization progress and select the next `xi`.
+
+            **Output Format Rules — read carefully:**
+            - Output must be **a single float** (e.g. `0.01`)
+            - Output must satisfy: `xi >= 0`
+            - Output **must not include** any explanation, text, code, or formatting — just the raw number
             """
 
             prompt = f"""
             EVALUATED_CONFIGURATIONS={X_run},
-            SEEN_PERFORMANCES={y_run}
+            SEEN_PERFORMANCES={y_run},
+            ETA={self._eta},
+            XI_HISTORY={self._xi_history}
             """
 
             self._prompt_history.append(prompt)
 
             content = [('system', primer)]
 
-            max_context = 200
+            max_context = 1
 
             prompt_context = self._prompt_history[-max_context:]
             result_context = self._result_history[-max_context:]
@@ -190,12 +206,21 @@ class EI(AbstractAcquisitionFunction):
                 if i < len(result_context):
                     content.append(('system', result_context[i]))
 
+            # print(f"###{content}###\n\n")
+
             result = send_to_llm(content)
-
-            self._result_history.append(result)
-
-            self._xi = ast.literal_eval(result)
-            print(self._eta, y_run)
+            # print(f"###{result}###\n\n")
+    
+            # use regex to find a number in the LLM's response (integer, float or float in scientific notation)
+            match_in_result = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", result)
+            
+            if match_in_result:
+                self._xi = float(match_in_result.group()) # * 200
+                self._result_history.append(self._xi)
+                self._xi_history.append(self._xi)
+                print(self._xi)
+            else:
+                raise ValueError(f"Unable to parse LLM response as float: {result}")
 
         def calculate_f() -> np.ndarray:
             z = (self._eta - m - self._xi) / s
