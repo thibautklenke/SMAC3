@@ -5,6 +5,7 @@ import sklearn.gaussian_process.kernels as kernels
 from ConfigSpace import Configuration
 
 from smac.acquisition.function.expected_improvement import EI
+from smac.acquisition.function.weighted_expected_improvement import WEI
 from smac.acquisition.maximizer.local_and_random_search import (
     LocalAndSortedRandomSearch,
 )
@@ -185,7 +186,8 @@ class BlackBoxFacade(AbstractFacade):
             Controls the balance between exploration and exploitation of the
             acquisition function.
         """
-        return EI(xi=xi)
+        #return EI(xi=xi)
+        return WEI()
 
     @staticmethod
     def get_acquisition_maximizer(  # type: ignore
