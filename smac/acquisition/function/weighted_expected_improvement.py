@@ -11,23 +11,6 @@ from smac.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-import grpc
-from automl.llm_proxy import llm_proxy_pb2
-from automl.llm_proxy import llm_proxy_pb2_grpc
-import ast
-
-from automl import BUDGET
-
-def send_to_llm(content):
-    channel = grpc.insecure_channel('localhost:50054')
-    stub = llm_proxy_pb2_grpc.LLMProxyStub(channel)
-    messages = [llm_proxy_pb2.ChatMessage(role=r, content=str(c)) for (r, c) in content]
-    request = llm_proxy_pb2.ChatRequest(
-        messages=messages,
-        model=""
-    )
-    return stub.Chat(request).content
-
 class WEI(AbstractAcquisitionFunction):
     def __init__(self, alpha: float = 0.5, xi: float = 0, log: bool = False, use_pure_PI: bool = False) -> None:
         super().__init__()
@@ -43,9 +26,6 @@ class WEI(AbstractAcquisitionFunction):
         self.pi_pure_term: np.ndarray | None = None
         self.pi_mod_term: np.ndarray | None = None
         self.ei_term: np.ndarray | None = None
-
-        self._config_selector = None
-        self._last_size = -1
 
     @property
     def name(self) -> str:  # noqa: D102
@@ -124,40 +104,6 @@ class WEI(AbstractAcquisitionFunction):
 
             m, v = self._model.predict_marginalized(X)  # TODO: can the variance become negative?
             s = np.sqrt(v)
-
-            if len(self._config_selector._runhistory) > self._last_size:
-
-                self._last_size = len(self._config_selector._runhistory)
-
-                X_run, y_run, _ = self._config_selector._collect_data()
-
-                primer = f"""
-                You are a decision-making agent (the world's best) in a Bayesian Optimization loop for hyperparameter tuning. The objective is to minimize a scalar loss.
-                You have two main responsibilities
-                1. Assess the current state of the optimization 
-                2. Use this knowledge to make an informed decision as to act exploratively or exploitatively.
-                """
-
-                prompt_evaluate_optimization = f"""
-                The past evaluations were EVALS={X_run} and the corresponding costs were COSTS={y_run}.
-                Currently, the optimization is {len(X_run)/ BUDGET} % complete.
-                The current incumbent cost is {self._eta}.
-                Assess the state of the optimization, i.e. whether it is making good progress or it is stagnating.
-                """
-
-                response_evaluate = send_to_llm([("system", primer), ("user", prompt_evaluate_optimization)])
-
-                prompt_generate_percentage = f"""
-                Based on this assessment, compute a float value in [0, 1] which will be used the guide the optimization in its current state
-                with respect to exploration and exploitation.
-                A value of 1 corresponds to full exploitation and a value of 0 corresponds to full exploration.
-                Return only this float value and NOTHING ELSE
-                """
-
-                response_percentage = send_to_llm([("system", primer), ("user", prompt_evaluate_optimization), ("assistant", response_evaluate), ("user", prompt_generate_percentage)])
-
-                self._alpha = ast.literal_eval(response_percentage)
-                print(self._alpha)
             
             def calculate_f() -> np.ndarray:
                 z = (self._eta - m - self._xi) / s

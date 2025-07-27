@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-import re
 from scipy.stats import norm
 
 from smac.acquisition.function.abstract_acquisition_function import (
@@ -11,25 +10,11 @@ from smac.acquisition.function.abstract_acquisition_function import (
 )
 from smac.utils.logging import get_logger
 
-import grpc
-from automl.llm_proxy import llm_proxy_pb2
-from automl.llm_proxy import llm_proxy_pb2_grpc
-import ast
-
 __copyright__ = "Copyright 2025, Leibniz University Hanover, Institute of AI"
 __license__ = "3-clause BSD"
 
 logger = get_logger(__name__)
 
-def send_to_llm(content):
-    channel = grpc.insecure_channel('localhost:50054')
-    stub = llm_proxy_pb2_grpc.LLMProxyStub(channel)
-    messages = [llm_proxy_pb2.ChatMessage(role=r, content=str(c)) for (r, c) in content]
-    request = llm_proxy_pb2.ChatRequest(
-        messages=messages,
-        model=""
-    )
-    return stub.Chat(request).content
 
 class EI(AbstractAcquisitionFunction):
     r"""The Expected Improvement (EI) criterion is used to decide where to evaluate a function f(x) next. The goal is to
@@ -80,15 +65,6 @@ class EI(AbstractAcquisitionFunction):
         self._xi: float = xi
         self._log: bool = log
         self._eta: float | None = None
-
-        self._prompt_history = []
-        self._result_history = []
-        self._xi_history = []
-
-        self._config_selector = None
-
-        self._last_size = -1
-
 
     @property
     def name(self) -> str:  # noqa: D102
@@ -148,101 +124,74 @@ class EI(AbstractAcquisitionFunction):
         assert self._model is not None
         assert self._xi is not None
 
-        if len(X.shape) == 1:
-            X = X[:, np.newaxis]
+        if self._eta is None:
+            raise ValueError(
+                "No current best specified. Call update("
+                "eta=<int>) to inform the acquisition function "
+                "about the current best value."
+            )
 
-        m, v = self._model.predict_marginalized(X)
-        s = np.sqrt(v)
+        if not self._log:
+            if len(X.shape) == 1:
+                X = X[:, np.newaxis]
 
-        # update \xi only if run history was updated
-        if len(self._config_selector._runhistory) > self._last_size:
+            m, v = self._model.predict_marginalized(X)
+            s = np.sqrt(v)
 
-            self._last_size = len(self._config_selector._runhistory)
+            def calculate_f() -> np.ndarray:
+                z = (self._eta - m - self._xi) / s
+                return (self._eta - m - self._xi) * norm.cdf(z) + s * norm.pdf(z)
 
-            X_run, y_run, _ = self._config_selector._collect_data()
-
-            primer = f"""
-            You are a decision-making agent in a Bayesian Optimization loop for hyperparameter tuning. The objective is to minimize a scalar loss.
-
-            You are invoked by the Expected Improvement (EI) acquisition function. EI uses a parameter `xi` to trade off between:
-            - Exploration (higher `xi`)
-            - Exploitation (lower `xi`)
-
-            Your task: Choose a scalar value for `xi` based on the current optimization state.
-
-            You are given:
-            - `EVALUATED_CONFIGURATIONS`: a list of past input vectors
-            - `SEEN_PERFORMANCES`: the observed losses for each configuration (lower is better)
-            - `ETA`: the best observed performance so far
-            - `XI_history`: all previous `xi` values chosen by you
-
-            Use this context to assess optimization progress and select the next `xi`.
-
-            **Output Format Rules — read carefully:**
-            - Output must be **a single float** (e.g. `0.01`)
-            - Output must satisfy: `xi >= 0`
-            - Output **must not include** any explanation, text, code, or formatting — just the raw number
-            """
-
-            prompt = f"""
-            EVALUATED_CONFIGURATIONS={X_run},
-            SEEN_PERFORMANCES={y_run},
-            ETA={self._eta},
-            XI_HISTORY={self._xi_history}
-            """
-
-            self._prompt_history.append(prompt)
-
-            content = [('system', primer)]
-
-            max_context = 1
-
-            prompt_context = self._prompt_history[-max_context:]
-            result_context = self._result_history[-max_context:]
-
-            for i in range(len(prompt_context)):
-                if i < len(prompt_context):
-                    content.append(('user', prompt_context[i]))
-                if i < len(result_context):
-                    content.append(('system', result_context[i]))
-
-            # print(f"###{content}###\n\n")
-
-            result = send_to_llm(content)
-            # print(f"###{result}###\n\n")
-    
-            # use regex to find a number in the LLM's response (integer, float or float in scientific notation)
-            match_in_result = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", result)
-            
-            if match_in_result:
-                self._xi = float(match_in_result.group()) # * 200
-                self._result_history.append(self._xi)
-                self._xi_history.append(self._xi)
-                print(self._xi)
+            if np.any(s == 0.0):
+                # if std is zero, we have observed x on all instances
+                # using a RF, std should be never exactly 0.0
+                # Avoid zero division by setting all zeros in s to one.
+                # Consider the corresponding results in f to be zero.
+                logger.warning("Predicted std is 0.0 for at least one sample.")
+                s_copy = np.copy(s)
+                s[s_copy == 0.0] = 1.0
+                f = calculate_f()
+                f[s_copy == 0.0] = 0.0
             else:
-                raise ValueError(f"Unable to parse LLM response as float: {result}")
+                f = calculate_f()
 
-        def calculate_f() -> np.ndarray:
-            z = (self._eta - m - self._xi) / s
-            return (self._eta - m - self._xi) * norm.cdf(z) + s * norm.pdf(z)
+            if (f < 0).any():
+                raise ValueError("Expected Improvement is smaller than 0 for at least one " "sample.")
 
-        if np.any(s == 0.0):
-            # if std is zero, we have observed x on all instances
-            # using a RF, std should be never exactly 0.0
-            # Avoid zero division by setting all zeros in s to one.
-            # Consider the corresponding results in f to be zero.
-            logger.warning("Predicted std is 0.0 for at least one sample.")
-            s_copy = np.copy(s)
-            s[s_copy == 0.0] = 1.0
-            f = calculate_f()
-            f[s_copy == 0.0] = 0.0
+            return f
         else:
-            f = calculate_f()
+            if len(X.shape) == 1:
+                X = X[:, np.newaxis]
 
-        if (f < 0).any():
-            raise ValueError("Expected Improvement is smaller than 0 for at least one " "sample.")
-        
-        return f
+            m, var_ = self._model.predict_marginalized(X)
+            std = np.sqrt(var_)
+
+            def calculate_log_ei() -> np.ndarray:
+                # we expect that f_min is in log-space
+                assert self._eta is not None
+                assert self._xi is not None
+
+                f_min = self._eta - self._xi
+                v = (f_min - m) / std
+                return (np.exp(f_min) * norm.cdf(v)) - (np.exp(0.5 * var_ + m) * norm.cdf(v - std))
+
+            if np.any(std == 0.0):
+                # if std is zero, we have observed x on all instances
+                # using a RF, std should be never exactly 0.0
+                # Avoid zero division by setting all zeros in s to one.
+                # Consider the corresponding results in f to be zero.
+                logger.warning("Predicted std is 0.0 for at least one sample.")
+                std_copy = np.copy(std)
+                std[std_copy == 0.0] = 1.0
+                log_ei = calculate_log_ei()
+                log_ei[std_copy == 0.0] = 0.0
+            else:
+                log_ei = calculate_log_ei()
+
+            if (log_ei < 0).any():
+                raise ValueError("Expected Improvement is smaller than 0 for at least one sample.")
+
+            return log_ei.reshape((-1, 1))
 
 
 class EIPS(EI):
